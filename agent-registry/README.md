@@ -6,21 +6,21 @@ Sample service for managing TAP (Trusted Agent Protocol) agents and their public
 
 ```bash
 # Install dependencies (from root directory)  
-pip install -r requirements.txt
+bun install
 
 # Initialize sample database
 cd agent-registry
 python populate_sample_data.py
 
 # Start service
-python main.py
+bun run dev
 ```
 
 Access the service at http://localhost:8080 (docs at /docs)
 
 ## Key Features
 
-- **Multi-Algorithm Support** - Ed25519 and RSA-PSS-SHA256 public keys
+- **Algorithm Support** - Ed25519 public keys
 - **Agent Management** - CRUD operations for TAP agents  
 - **Key Validation** - Automatic key format validation
 - **Registry UI** - Simple web interface for agent management
@@ -55,10 +55,10 @@ curl -X POST http://localhost:8080/agents/register \
   -d '{
     "name": "Sample Payment Directory",
     "domain": "https://directory.example.com",
-    "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjAN...",
-    "algorithm": "rsa-pss-sha256",
-    "key_id": "primary-rsa",
-    "description": "Primary RSA key"
+    "public_key": "4LhKd577EeQdSSrLfnq43RfxG4VofDe3HuwNuoR8szLt",
+    "algorithm": "ed25519",
+    "key_id": "primary-ed25519",
+    "description": "Primary ed25519 key"
   }'
 ```
 
@@ -69,7 +69,7 @@ curl -X POST http://localhost:8080/agents/1/keys \
   -d '{
     "key_id": "backup-ed25519",
     "algorithm": "ed25519", 
-    "public_key": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+    "public_key": "4LhKd577EeQdSSrLfnq43RfxG4VofDe3HuwNuoR8szLt",
     "description": "Backup Ed25519 key",
     "is_active": "true"
   }'
@@ -78,17 +78,17 @@ curl -X POST http://localhost:8080/agents/1/keys \
 #### 3. CDN Proxy Key Lookup
 The CDN proxy uses the `/keys/{key_id}` endpoint to retrieve keys for signature verification:
 ```bash
-curl http://localhost:8080/keys/primary-rsa
+curl http://localhost:8080/keys/primary-ed25519
 ```
 
 Returns:
 ```json
 {
-  "key_id": "primary-rsa",
+  "key_id": "primary-ed25519",
   "is_active": "true",
-  "public_key": "-----BEGIN PUBLIC KEY-----\n...",
-  "algorithm": "rsa-pss-sha256",
-  "description": "Primary RSA key",
+  "public_key": "4LhKd577EeQdSSrLfnq43RfxG4VofDe3HuwNuoR8szLt",
+  "algorithm": "ed25519",
+  "description": "Primary ed25519 key",
   "agent_id": 1,
   "agent_name": "Sample Payment Directory",
   "agent_domain": "https://directory.example.com"
@@ -98,20 +98,15 @@ Returns:
 ### Supported Key Formats
 
 #### Ed25519 Keys
-- **Format**: Base64 encoded raw public key (44 characters)
-- **Example**: `"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo="`
+- **Format**: Base58 encoded raw public key (44 characters)
+- **Example**: `"4LhKd577EeQdSSrLfnq43RfxG4VofDe3HuwNuoR8szLt"`
 - **Algorithm**: `"ed25519"`
 
-#### RSA-PSS-SHA256 Keys  
-- **Format**: PEM encoded RSA public key
-- **Example**: `"-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0B..."`
-- **Algorithm**: `"rsa-pss-sha256"`
-
+ 
 ## Architecture
 
 This sample demonstrates:
-- FastAPI service patterns
-- SQLAlchemy models with SQLite
+- Hono service patterns 
 - Multi-key agent management
 - Public key validation and management
 - RFC 9421 compliance for signature verification
@@ -125,9 +120,4 @@ Access the web interface at http://localhost:8080/ui for:
 - Testing agent registration flow
 
 
-
-### Debug Mode
-```bash
-# Enable comprehensive logging
-DEBUG=true LOG_LEVEL=DEBUG python main.py
-```
+ 

@@ -1,0 +1,25 @@
+{
+  "name": "agent-registry",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.6",
+    "@hono/zod-validator": "^0.7.4",
+    "better-sqlite3": "^12.4.1",
+    "bs58": "^6.0.0",
+    "dotenv": "^17.2.3",
+    "hono": "^4.10.4",
+    "tsx": "^4.7.1",
+    "tweetnacl": "^1.0.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.11.17",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,18 +1,10 @@
-/* © 2025 Visa.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 require('dotenv').config();
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const crypto = require('crypto');
 const axios = require('axios');
-
+const bs58 = require('bs58'); 
+const nacl = require('tweetnacl');
 
 // HTML escaping function to prevent XSS
 function escapeHtml(unsafe) {
@@ -105,52 +97,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// Simple rate limiting to prevent abuse (TEMPORARILY DISABLED FOR DEBUGGING)
-/*
-const requestCounts = new Map();
-const RATE_LIMIT_WINDOW = 60000; // 1 minute
-const RATE_LIMIT_MAX = 100; // requests per window
-
-app.use((req, res, next) => {
-  const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
-  const now = Date.now();
-  
-  // Clean up old entries
-  for (const [ip, data] of requestCounts.entries()) {
-    if (now - data.windowStart > RATE_LIMIT_WINDOW) {
-      requestCounts.delete(ip);
-    }
-  }
-  
-  // Check rate limit
-  const clientData = requestCounts.get(clientIP) || { count: 0, windowStart: now };
-  
-  if (now - clientData.windowStart > RATE_LIMIT_WINDOW) {
-    // Reset window
-    clientData.count = 1;
-    clientData.windowStart = now;
-  } else {
-    clientData.count++;
-  }
-  
-  requestCounts.set(clientIP, clientData);
-  
-  if (clientData.count > RATE_LIMIT_MAX) {
-    console.log(`❌ Rate limit exceeded for IP: ${sanitizeLogOutput(clientIP)}`);
-    return sendErrorResponse(res, 429, '🚫 Rate Limit Exceeded', 
-      'Too many requests. Please try again later.', null);
-  }
-  
-  next();
-});
-*/
-
 // Agent Registry API base URL
 const AGENT_REGISTRY_URL = 'http://localhost:9002';
 
 // Cache for fetched keys to avoid repeated API calls
 const keyCache = new Map();
-const CACHE_TTL = 5 ; // 5 milliseconds
+const CACHE_TTL = 5; // 5 milliseconds
 
 // Nonce cache to prevent replay attacks
 const nonceCache = new Map();
@@ -184,7 +136,7 @@ async function getKeyById(keyId) {
   
   try {
     console.log('🔍 Fetching key from Agent Registry - KeyId:', sanitizeLogOutput(keyId));
-    const response = await axios.get(`${AGENT_REGISTRY_URL}/keys/${keyId}`);
+    const response = await axios.get(`${AGENT_REGISTRY_URL}/${keyId}`);
     
     if (response.status === 200) {
       const keyData = response.data;
@@ -207,12 +159,10 @@ async function getKeyById(keyId) {
   }
 }
 
-
-
 // Parse RFC 9421 signature input string to extract components
 function parseRFC9421SignatureInput(signatureInput) {
   try {
-    // Parse RFC 9421 format: sig2=("@authority" "@path"); created=1735689600; expires=1735693200; keyId="key-id"; alg="rsa-pss-sha256"; nonce="123"; tag="agent-payment-auth"
+    // Parse RFC 9421 format: sig2=("@authority" "@path"); created=1735689600; expires=1735693200; keyId="key-id"; alg="ed25519"; nonce="123"; tag="agent-payment-auth"
     const signatureMatch = signatureInput.match(/sig2=\(([^)]+)\);\s*(.+)/);
     
     if (!signatureMatch) {
@@ -242,7 +192,6 @@ function parseRFC9421SignatureInput(signatureInput) {
     console.log('  - attributes:', Object.fromEntries(
       Object.entries(attributes).map(([k, v]) => [k, typeof v === 'string' ? sanitizeLogOutput(v) : v])
     ));
-    console.log('  - original signatureInput:', sanitizeLogOutput(signatureInput));
     
     return {
       params,
@@ -299,61 +248,24 @@ function buildRFC9421SignatureString(params, requestData, signatureInputHeader) 
   
   console.log('🔍 RFC 9421 Signature Base String:');
   console.log('---BEGIN SIGNATURE BASE STRING---');
-  console.log(sanitizeLogOutput(signatureBaseString));
+  console.log(signatureBaseString);
   console.log('---END SIGNATURE BASE STRING---');
   console.log('📏 Signature base string length:', signatureBaseString.length);
   
   return signatureBaseString;
 }
 
-// Verify RSA signature with PSS padding (to match Python cryptography library)
-async function verifyRSASignature(publicKeyPem, signatureBase64, signatureString) {
+// Verify Ed25519 signature with Base58 encoding
+async function verifyEd25519Signature(publicKeyBase58, signatureBase58, signatureString) {
   try {
-    console.log('🔍 RSA Verification:');
+    console.log('🔍 Ed25519 Verification (Base58):',publicKeyBase58);
     console.log('- Signature string length:', signatureString.length);
-    console.log('- Signature base64 length:', signatureBase64.length);
+    console.log('- Signature base58 length:', signatureBase58.length);
+    console.log('- Public key base58 length:', publicKeyBase58.length);
     console.log('- First 100 chars of signature string:', sanitizeLogOutput(signatureString.substring(0, 100)));
     
-    // Create public key object with explicit PSS padding
-    const publicKey = crypto.createPublicKey({
-      key: publicKeyPem,
-      format: 'pem',
-      type: 'spki'
-    });
-    
-    // Decode base64 signature
-    const signatureBuffer = Buffer.from(signatureBase64, 'base64');
-    
-    // Create verifier with PSS padding to match Python's PSS padding
-    const verifier = crypto.createVerify('RSA-SHA256');
-    verifier.update(signatureString, 'utf-8');
-    
-    // Verify with PSS padding options (matching Python's PSS.MAX_LENGTH)
-    const isValid = verifier.verify({
-      key: publicKey,
-      padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-      saltLength: crypto.constants.RSA_PSS_SALTLEN_MAX_SIGN
-    }, signatureBuffer);
-    
-    console.log('🎯 Verification result:', isValid ? 'VALID ✅' : 'INVALID ❌');
-    return isValid;
-  } catch (error) {
-    console.error('❌ Signature verification error:', sanitizeLogOutput(error.message));
-    return false;
-  }
-}
-
-// Verify Ed25519 signature
-async function verifyEd25519Signature(publicKeyBase64, signatureBase64, signatureString) {
-  try {
-    console.log('🔍 Ed25519 Verification:');
-    console.log('- Signature string length:', signatureString.length);
-    console.log('- Signature base64 length:', signatureBase64.length);
-    console.log('- Public key base64 length:', publicKeyBase64.length);
-    console.log('- First 100 chars of signature string:', sanitizeLogOutput(signatureString.substring(0, 100)));
-    
-    // Create Ed25519 public key from base64 raw bytes
-    const publicKeyBuffer = Buffer.from(publicKeyBase64, 'base64');
+    // Decode Base58 public key to raw bytes
+    const publicKeyBuffer = bs58.default.decode(publicKeyBase58);
     console.log('- Public key buffer length:', publicKeyBuffer.length);
     
     // Ed25519 public keys should be exactly 32 bytes
@@ -361,19 +273,10 @@ async function verifyEd25519Signature(publicKeyBase64, signatureBase64, signatur
       throw new Error(`Ed25519 public key must be 32 bytes, got ${publicKeyBuffer.length} bytes`);
     }
     
-    // Create public key object using DER format for Ed25519
-    // Ed25519 public key in DER format: 30 2a 30 05 06 03 2b 65 70 03 21 00 + 32 bytes of key
-    const derPrefix = Buffer.from([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00]);
-    const derPublicKey = Buffer.concat([derPrefix, publicKeyBuffer]);
+     
     
-    const publicKey = crypto.createPublicKey({
-      key: derPublicKey,
-      format: 'der',
-      type: 'spki'
-    });
-    
-    // Decode base64 signature
-    const signatureBuffer = Buffer.from(signatureBase64, 'base64');
+    // Decode Base58 signature to raw bytes
+    const signatureBuffer = bs58.default.decode(signatureBase58);
     console.log('- Signature buffer length:', signatureBuffer.length);
     
     // Ed25519 signatures should be exactly 64 bytes
@@ -382,7 +285,9 @@ async function verifyEd25519Signature(publicKeyBase64, signatureBase64, signatur
     }
     
     // Verify Ed25519 signature (no hashing needed, Ed25519 is pure)
-    const isValid = crypto.verify(null, Buffer.from(signatureString, 'utf-8'), publicKey, signatureBuffer);
+    // console.log(Buffer.from(signatureString, 'utf-8'),publicKeyBuffer, signatureBuffer);
+    
+    const isValid = nacl.sign.detached.verify(Buffer.from(signatureString, 'utf-8'), signatureBuffer,publicKeyBuffer);
     
     console.log('🎯 Ed25519 Verification result:', isValid ? 'VALID ✅' : 'INVALID ❌');
     return isValid;
@@ -406,21 +311,21 @@ const verifySignature = async (req, res, next) => {
     'signature': signature ? `${sanitizeLogOutput(signature.substring(0, 30))}...` : sanitizeLogOutput(signature)
   });
 
-let signatureData;
+  let signatureData;
 
-// Parse RFC 9421 signature input
-try {
-  signatureData = parseRFC9421SignatureInput(signatureInput);
-  if (!signatureData) {
-    throw new Error('Failed to parse RFC 9421 signature input');
+  // Parse RFC 9421 signature input
+  try {
+    signatureData = parseRFC9421SignatureInput(signatureInput);
+    if (!signatureData) {
+      throw new Error('Failed to parse RFC 9421 signature input');
+    }
+  } catch (err) {
+    console.log('❌ Failed to parse RFC 9421 signature-input:', sanitizeLogOutput(err.message));
+    return sendErrorResponse(res, 403, '🔐 Invalid RFC 9421 Signature Input', 
+      'Could not parse signature-input header. Expected RFC 9421 format.', err.message);
   }
-} catch (err) {
-  console.log('❌ Failed to parse RFC 9421 signature-input:', sanitizeLogOutput(err.message));
-  return sendErrorResponse(res, 403, '🔐 Invalid RFC 9421 Signature Input', 
-    'Could not parse signature-input header. Expected RFC 9421 format.', err.message);
-}
 
-const signatureKeyId = signatureData.keyId;
+  const signatureKeyId = signatureData.keyId;
 
   // Validate keyId format to prevent injection attacks
   if (!validateKeyId(signatureKeyId)) {
@@ -534,48 +439,43 @@ const signatureKeyId = signatureData.keyId;
       requestData,
       signatureInput
     );
+    console.log("Signature string: ",signatureBaseString);
     
     // Extract signature value (remove sig2=: wrapper)
-    let signatureBase64 = signature;
+    let signatureBase58 = signature;
     const signatureMatch = signature.match(/sig2=:([^:]+):/);
     if (signatureMatch) {
-      signatureBase64 = signatureMatch[1];
+      signatureBase58 = signatureMatch[1];
     } else {
-      console.log('❌ CDN: Invalid signature format - expected sig2=:base64:');
+      console.log('❌ CDN: Invalid signature format - expected sig2=:base58:');
       return sendErrorResponse(res, 403, '🔐 Invalid Signature Format', 
-        'The signature format is invalid.', 'Expected RFC 9421 signature format: sig2=:base64:');
+        'The signature format is invalid.', 'Expected RFC 9421 signature format: sig2=:base58:');
     }
     
-    // Verify RFC 9421 signature
-    const publicKey = keyInfo.public_key;
-    console.log('🔐 Verifying RFC 9421 signature...');
-    console.log('🔑 Using public key from agent registry for verification');
-    console.log('📋 Key info:', { keyId: sanitizeLogOutput(keyInfo.key_id), algorithm: sanitizeLogOutput(keyInfo.algorithm) });
-    console.log('🔍 Signature base64 to verify:', sanitizeLogOutput(signatureBase64.substring(0, 50)) + '...');
-    
-    // Choose verification method based on algorithm
-    let isValidSignature = false;
+    // Verify that algorithm is Ed25519 only
     const algorithm = signatureData.algorithm.toLowerCase();
-    
-    if (algorithm === 'rsa-pss-sha256') {
-      console.log('🔐 Using RSA-PSS-SHA256 verification...');
-      isValidSignature = await verifyRSASignature(publicKey, signatureBase64, signatureBaseString);
-    } else if (algorithm === 'ed25519') {
-      console.log('🔐 Using Ed25519 verification...');
-      isValidSignature = await verifyEd25519Signature(publicKey, signatureBase64, signatureBaseString);
-    } else {
+    if (algorithm !== 'ed25519') {
       console.log(`❌ CDN: Unsupported algorithm: ${algorithm}`);
       return sendErrorResponse(res, 400, '🔐 Unsupported Algorithm', 
-        `The signature algorithm '${algorithm}' is not supported.`, `Supported algorithms: rsa-pss-sha256, ed25519`);
+        `The signature algorithm '${algorithm}' is not supported.`, 'Only Ed25519 signatures are accepted');
     }
     
+    // Verify RFC 9421 signature with Ed25519 Base58
+    const publicKey = keyInfo.public_key;
+    console.log('🔐 Verifying RFC 9421 Ed25519 signature (Base58)...');
+    console.log('🔑 Using public key from agent registry for verification');
+    console.log('📋 Key info:', { keyId: sanitizeLogOutput(keyInfo.key_id), algorithm: sanitizeLogOutput(keyInfo.algorithm) });
+    console.log('🔍 Signature base58 to verify:', sanitizeLogOutput(signatureBase58.substring(0, 50)) + '...');
+    
+    const isValidSignature = await verifyEd25519Signature(publicKey, signatureBase58, signatureBaseString);
+    
     if (!isValidSignature) {
-      console.log(`❌ CDN: ${algorithm} signature verification failed`);
+      console.log(`❌ CDN: Ed25519 signature verification failed`);
       return sendErrorResponse(res, 403, '🔐 Signature Verification Failed', 
         'The signature could not be verified against the provided key.', `Key ID: ${keyInfo.key_id}, Algorithm: ${algorithm}`);
     }
     
-    console.log('✅ CDN: RFC 9421 signature verification successful!');
+    console.log('✅ CDN: RFC 9421 Ed25519 signature verification successful!');
     console.log('🎯 Authenticated request with:', {
       keyId: sanitizeLogOutput(keyInfo.key_id),
       algorithm: sanitizeLogOutput(signatureData.algorithm),
@@ -583,16 +483,8 @@ const signatureKeyId = signatureData.keyId;
       nonce: sanitizeLogOutput(signatureData.nonce)
     });
     
-    console.log('✅ CDN: RFC 9421 signature verification successful!');
-    console.log('🎯 Request authenticated with:', {
-      keyId: sanitizeLogOutput(keyInfo.key_id),
-      algorithm: sanitizeLogOutput(signatureData.algorithm),
-      tag: sanitizeLogOutput(signatureData.tag),
-      nonce: sanitizeLogOutput(signatureData.nonce)
-    });
-    
-    // Signature is valid - just forward the request as-is (no headers needed)
-    console.log('� Signature valid - forwarding request without modification');
+    // Signature is valid - forward the request
+    console.log('✅ Signature valid - forwarding request without modification');
     
     next();
   } catch (error) {
@@ -601,8 +493,6 @@ const signatureKeyId = signatureData.keyId;
       'An internal error occurred during signature verification.', null);
   }
 };
-
-
 
 // Add a test endpoint that bypasses signature verification
 app.get('/test-proxy', (req, res) => {
@@ -669,7 +559,6 @@ app.use('/api', createProxyMiddleware({
   logLevel: 'debug',
   onProxyReq: (proxyReq, req, res) => {
     console.log(`🔄 Forwarding API request to backend: ${sanitizeLogOutput(req.path)}`);
-    // Simple passthrough - no header manipulation needed
   }
 }));
 
@@ -694,18 +583,19 @@ Architecture:
   Browser → Proxy:3001 (RFC 9421 CDN simulation) → React:3000 & Backend:8000
 
 RFC 9421 HTTP Message Signatures Support:
-  ✅ Signature Input parsing: sig2=("@authority" "@path"); created=...; expires=...; keyId="..."; alg="rsa-pss-sha256"
-  ✅ Signature parsing: sig2=:base64-signature:
-  ✅ RSA-PSS-SHA256 verification
+  ✅ Signature Input parsing: sig2=("@authority" "@path"); created=...; expires=...; keyId="..."; alg="ed25519"
+  ✅ Signature parsing: sig2=:base58-signature:
+  ✅ Ed25519 Base58 verification ONLY
   ✅ Timestamp validation
+  ✅ Nonce-based replay protection
   ✅ Agent Registry integration
 
 Test URLs:
   🌐 Normal access: http://localhost:${PORT}
-  🔐 With RFC 9421 headers: curl -H "signature-input: sig2=(\\"@authority\\" \\"@path\\"); created=...; keyId=\\"key-id\\"" \\
-                                 -H "signature: sig2=:base64-signature:" \\
+  🔐 With RFC 9421 headers: curl -H "signature-input: sig2=(\\"@authority\\" \\"@path\\"); created=...; keyId=\\"key-id\\"; alg=\\"ed25519\\"" \\
+                                 -H "signature: sig2=:base58-signature:" \\
                                  http://localhost:${PORT}/product/1
-
+ 
   `);
 });
 

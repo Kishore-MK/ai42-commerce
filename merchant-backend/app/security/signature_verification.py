@@ -10,21 +10,13 @@ import re
 import time
 import json
 from typing import Dict, Optional, Tuple
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.exceptions import InvalidSignature
-import base64
-import hashlib
+import base58
 
-publicKey = """-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAysHJFJ9uoVvU1sH2x3TV
-bwW3nfyp34eOb8w177Ei/Bx8pk+8Ibu1yulV0nCBl/c9insg1k2x7dw1jRDZHJBG
-wIpCdRL0GKm6qIdtsjeOcMnkI5ET0zGpxkhuRUwRblYW3LAdAq1Gja1WSPQKRT8r
-EhUsmSlDWgAf0rFna15Ok6zOO3q21LtrEjnJSrgO+cr33YH0IAdALD7hqtPYK7+/
-7dD/XIgGW9cX0USMxdDBUt8TnN2TYar5YXetpMnFOPpQHiGpKTkDwrRggcthUyuC
-e1CoL/9a/DWilJwd481QkurvZqGaKegX5DlI+jLNvfi8TWMS3jCjknyOLg54KU86
-LQIDAQAB
------END PUBLIC KEY-----"""
+# Example Ed25519 public key in Base58 format (32 bytes encoded)
+# In production, replace with actual public key
+publicKeyBase58 = "4LhKd577EeQdSSrLfnq43RfxG4VofDe3HuwNuoR8szLt"
 
 class SignatureVerifier:
     def __init__(self):
@@ -41,13 +33,20 @@ class SignatureVerifier:
         }
     
     def _load_public_key(self, agent_name: str):
-        """Load public key for the agent. In production, load from secure storage."""
+        """Load Ed25519 public key from Base58 string. In production, load from secure storage."""
         
         if agent_name == "example":
-            return serialization.load_pem_public_key(publicKey.encode("utf-8"))
+            # Decode Base58 to get 32-byte Ed25519 public key
+            public_key_bytes = base58.b58decode(publicKeyBase58)
+            if len(public_key_bytes) != 32:
+                raise ValueError(f"Ed25519 public key must be 32 bytes, got {len(public_key_bytes)}")
+            return ed25519.Ed25519PublicKey.from_public_bytes(public_key_bytes)
         elif agent_name == "sample":
             # Replace with actual sample public key in production
-            return serialization.load_pem_public_key(publicKey.encode("utf-8"))
+            public_key_bytes = base58.b58decode(publicKeyBase58)
+            if len(public_key_bytes) != 32:
+                raise ValueError(f"Ed25519 public key must be 32 bytes, got {len(public_key_bytes)}")
+            return ed25519.Ed25519PublicKey.from_public_bytes(public_key_bytes)
         else:
             raise ValueError(f"Unknown agent name: {agent_name}")
 
@@ -58,7 +57,7 @@ class SignatureVerifier:
             # Parse Signature-Agent
             agent_url = signature_agent.strip('"')
             
-            # Parse Signature-Input
+            # Parse Signature-Input (Ed25519 only)
             signature_input_pattern = r'sig1=\("([^"]+)"\);\s*nonce="([^"]+)";\s*created=(\d+);\s*expires=(\d+);\s*keyid="([^"]+)";\s*tag="([^"]+)"'
             match = re.match(signature_input_pattern, signature_input.strip())
             
@@ -67,7 +66,7 @@ class SignatureVerifier:
             
             signature_params, nonce, created, expires, keyid, tag = match.groups()
             
-            # Parse Signature
+            # Parse Signature (Base58 format)
             signature_pattern = r'sig1=:([^:]+):'
             sig_match = re.match(signature_pattern, signature.strip())
             
@@ -91,7 +90,7 @@ class SignatureVerifier:
             return None
     
     def verify_signature(self, parsed_data: Dict, request_data: Dict) -> Tuple[bool, str]:
-        """Verify the signature against the request data."""
+        """Verify the Ed25519 signature against the request data."""
         try:
             agent_url = parsed_data["agent_url"]
             
@@ -116,23 +115,25 @@ class SignatureVerifier:
                 parsed_data["expires"]
             )
             
-            # Verify signature
+            # Verify Ed25519 signature
             public_key = self.trusted_agents[agent_url]["public_key"]
-            signature_bytes = base64.b64decode(parsed_data["signature"])
+            
+            # Decode Base58 signature to bytes
+            signature_bytes = base58.b58decode(parsed_data["signature"])
+            
+            # Ed25519 signatures should be exactly 64 bytes
+            if len(signature_bytes) != 64:
+                return False, f"Ed25519 signature must be 64 bytes, got {len(signature_bytes)}"
             
             try:
+                # Ed25519 verification (no hashing needed, pure signature)
                 public_key.verify(
                     signature_bytes,
-                    signature_string.encode('utf-8'),
-                    padding.PSS(
-                        mgf=padding.MGF1(hashes.SHA256()),
-                        salt_length=padding.PSS.MAX_LENGTH
-                    ),
-                    hashes.SHA256()
+                    signature_string.encode('utf-8')
                 )
                 return True, f"Verified agent: {self.trusted_agents[agent_url]['name']}"
             except InvalidSignature:
-                return False, "Invalid signature"
+                return False, "Invalid Ed25519 signature"
                 
         except Exception as e:
             return False, f"Verification error: {str(e)}"

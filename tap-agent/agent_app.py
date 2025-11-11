@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-import base64
 import json
 import time
 import webbrowser
@@ -22,28 +21,18 @@ import threading
 import datetime
 import re
 from urllib.parse import urlencode
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.backends import default_backend
+import base58
 
-# Get RSA keys from environment variables
-def get_static_keys_from_env():
-    """Get RSA keys from environment variables"""
-    private_key = os.getenv('RSA_PRIVATE_KEY')
-    public_key = os.getenv('RSA_PUBLIC_KEY')
-    
-    if not private_key or not public_key:
-        raise ValueError("RSA_PRIVATE_KEY and RSA_PUBLIC_KEY must be set in environment variables")
-    
-    return private_key, public_key
-
+# Get Ed25519 keys from environment variables
 def get_ed25519_keys_from_env():
-    """Get Ed25519 keys from environment variables"""
+    """Get Ed25519 keys from environment variables (Base58 format)"""
     private_key = os.getenv('ED25519_PRIVATE_KEY')
     public_key = os.getenv('ED25519_PUBLIC_KEY')
     
     if not private_key or not public_key:
-        raise ValueError("ED25519_PRIVATE_KEY and ED25519_PUBLIC_KEY must be set in environment variables")
+        raise ValueError("ED25519_PRIVATE_KEY and ED25519_PUBLIC_KEY must be set in environment variables (Base58 format)")
     
     return private_key, public_key
 
@@ -52,87 +41,6 @@ _product_extraction_results = None
 
 # Global variable to store order completion results across threads
 _order_completion_results = None
-
-def get_static_keys():
-    """Return the static private and public keys from environment variables"""
-    return get_static_keys_from_env()
-
-def create_http_message_signature(private_key_pem: str, authority: str, path: str, keyid: str, nonce: str, created: int, expires: int, tag: str) -> tuple[str, str]:
-    """Create HTTP Message Signature following RFC 9421 syntax"""
-    try:
-        # Create signature parameters string
-        signature_params = f'("@authority" "@path"); created={created}; expires={expires}; keyId="{keyid}"; alg="rsa-pss-sha256"; nonce="{nonce}"; tag="{tag}"'
-        
-        # Create the signature base string following RFC 9421 format
-        signature_base_lines = [
-            f'"@authority": {authority}',
-            f'"@path": {path}',
-            f'"@signature-params": {signature_params}'
-        ]
-        signature_base = '\n'.join(signature_base_lines)
-        
-        print(f"🔐 RFC 9421 Signature Base String:\n{signature_base}")
-        print(f"🌐 Authority: {authority}")
-        print(f"📍 Path: {path}")
-        print(f"📋 Signature Params: {signature_params}")
-        
-        # Load private key
-        private_key = serialization.load_pem_private_key(
-            private_key_pem.encode('utf-8'),
-            password=None,
-            backend=default_backend()
-        )
-        
-        # Sign the signature base string using RSA-PSS (matching the algorithm declared)
-        signature = private_key.sign(
-            signature_base.encode('utf-8'),
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
-        )
-        
-        signature_b64 = base64.b64encode(signature).decode('utf-8')
-        
-        # Format the signature-input header (RFC 9421 format)
-        signature_input_header = f'sig2=("@authority" "@path"); created={created}; expires={expires}; keyId="{keyid}"; alg="rsa-pss-sha256"; nonce="{nonce}"; tag="{tag}"'
-        
-        # Format the signature header (RFC 9421 format)
-        signature_header = f'sig2=:{signature_b64}:'
-        
-        print(f"✅ Created RFC 9421 compliant signature")
-        print(f"📤 Signature-Input: {signature_input_header}")
-        print(f"🔒 Signature: {signature_header}")
-        
-        return signature_input_header, signature_header
-        
-    except Exception as e:
-        print(f"❌ Error creating HTTP message signature: {str(e)}")
-        return "", ""
-
-def parse_url_components(url: str) -> tuple[str, str]:
-    """Parse URL to extract authority and path components for RFC 9421"""
-    try:
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        
-        # Authority is the host (and port if not default)
-        authority = parsed.netloc
-        
-        # Path includes the path and query parameters
-        path = parsed.path
-        if parsed.query:
-            path += f"?{parsed.query}"
-        
-        print(f"🔍 Parsed URL: {url}")
-        print(f"🌐 Authority: {authority}")
-        print(f"📍 Path: {path}")
-        
-        return authority, path
-    except Exception as e:
-        print(f"❌ Error parsing URL: {str(e)}")
-        return "", ""
 
 def launch_with_playwright(url: str, headers: dict) -> bool:
     """Launch browser with headers using Playwright"""
@@ -341,7 +249,7 @@ def launch_with_playwright(url: str, headers: dict) -> bool:
         
         st.success("✅ Browser launched with headers!")
         st.info("🤖 Browser will automatically extract product info and close.")
-        st.warning("� Check the terminal/console for extraction results.")
+        st.warning("👀 Check the terminal/console for extraction results.")
         return True
             
     except ImportError:
@@ -551,39 +459,7 @@ def complete_checkout_with_playwright(product_url: str, cart_url: str, checkout_
                     # STEP 5: Fill out checkout form
                     print(f"📝 STEP 5: Filling out comprehensive checkout form...")
                     
-                    # First, let's scan the page to see what form elements are available
-                    print("🔍 Scanning page for form elements...")
-                    try:
-                        all_inputs = page.query_selector_all('input, select, textarea')
-                        print(f"📋 Found {len(all_inputs)} form elements on the page:")
-                        
-                        for i, input_elem in enumerate(all_inputs[:20]):  # Show first 20 elements
-                            try:
-                                try:
-                                    tag = input_elem.evaluate('el => el.tagName') or 'unknown'
-                                except:
-                                    tag = input_elem.get_attribute('tagName') or 'unknown'
-                                    
-                                input_type = input_elem.get_attribute('type') or 'text'
-                                name = input_elem.get_attribute('name') or 'no-name'
-                                input_id = input_elem.get_attribute('id') or 'no-id'
-                                placeholder = input_elem.get_attribute('placeholder') or 'no-placeholder'
-                                visible = input_elem.is_visible()
-                                enabled = input_elem.is_enabled()
-                                
-                                print(f"   {i+1}. {tag.lower()}[{input_type}] name='{name}' id='{input_id}' placeholder='{placeholder}' visible={visible} enabled={enabled}")
-                            except:
-                                print(f"   {i+1}. <error reading element>")
-                                
-                        if len(all_inputs) > 20:
-                            print(f"   ... and {len(all_inputs) - 20} more elements")
-                            
-                    except Exception as e:
-                        print(f"⚠️ Error scanning form elements: {e}")
-                    
-                    print("="*50)
-                    
-                    # Comprehensive checkout form data matching the React form structure
+                    # Comprehensive checkout form data
                     checkout_info = {
                         # Contact Information
                         'email': 'john.doe@example.com',
@@ -600,17 +476,6 @@ def complete_checkout_with_playwright(product_url: str, cart_url: str, checkout_
                         'zipCode': '10001',
                         'country': 'United States',
                         
-                        # Billing Address (initially same as shipping)
-                        'billingFirstName': 'John',
-                        'billingLastName': 'Doe', 
-                        'billingCompany': 'Example Company Inc.',
-                        'billingAddress1': '123 Main Street',
-                        'billingAddress2': 'Suite 456',
-                        'billingCity': 'New York',
-                        'billingState': 'NY',
-                        'billingZipCode': '10001',
-                        'billingCountry': 'United States',
-                        
                         # Payment Information
                         'cardNumber': '4111111111111111',
                         'expiryDate': '12/25',
@@ -618,226 +483,57 @@ def complete_checkout_with_playwright(product_url: str, cart_url: str, checkout_
                         'nameOnCard': 'John Doe',
                         
                         # Additional Options
-                        'specialInstructions': 'Please handle with care - signature authentication sample order'
+                        'specialInstructions': 'Ed25519 Base58 signature authentication sample order'
                     }
                     
-                    # Comprehensive form field selectors matching React form structure
+                    # Comprehensive form field selectors
                     form_selectors = {
-                        # Contact Information
-                        'email': ['#email', '[name="email"]', '[type="email"]', '[placeholder*="email"]', '[data-testid="email"]'],
-                        'phone': ['#phone', '[name="phone"]', '[type="tel"]', '[placeholder*="phone"]', '[data-testid="phone"]'],
-                        
-                        # Shipping Address
-                        'firstName': ['#firstName', '[name="firstName"]', '[placeholder*="first"]', '[data-testid="firstName"]', '[id*="first"]'],
-                        'lastName': ['#lastName', '[name="lastName"]', '[placeholder*="last"]', '[data-testid="lastName"]', '[id*="last"]'],
-                        'company': ['#company', '[name="company"]', '[placeholder*="company"]', '[data-testid="company"]'],
-                        'address1': ['#address1', '[name="address1"]', '[placeholder*="address"]', '[data-testid="address1"]', '#address'],
-                        'address2': ['#address2', '[name="address2"]', '[placeholder*="address2"]', '[data-testid="address2"]', '[placeholder*="apt"]'],
-                        'city': ['#city', '[name="city"]', '[placeholder*="city"]', '[data-testid="city"]'],
-                        'state': ['#state', '[name="state"]', '[placeholder*="state"]', '[data-testid="state"]'],
-                        'zipCode': ['#zipCode', '#zip', '[name="zip"]', '[name="zipCode"]', '[placeholder*="zip"]', '[data-testid="zipCode"]'],
-                        'country': ['#country', '[name="country"]', '[data-testid="country"]'],
-                        
-                        # Billing Address
-                        'billingFirstName': ['#billingFirstName', '[name="billingFirstName"]', '[data-testid="billingFirstName"]'],
-                        'billingLastName': ['#billingLastName', '[name="billingLastName"]', '[data-testid="billingLastName"]'],
-                        'billingCompany': ['#billingCompany', '[name="billingCompany"]', '[data-testid="billingCompany"]'],
-                        'billingAddress1': ['#billingAddress1', '[name="billingAddress1"]', '[data-testid="billingAddress1"]'],
-                        'billingAddress2': ['#billingAddress2', '[name="billingAddress2"]', '[data-testid="billingAddress2"]'],
-                        'billingCity': ['#billingCity', '[name="billingCity"]', '[data-testid="billingCity"]'],
-                        'billingState': ['#billingState', '[name="billingState"]', '[data-testid="billingState"]'],
-                        'billingZipCode': ['#billingZipCode', '[name="billingZipCode"]', '[data-testid="billingZipCode"]'],
-                        'billingCountry': ['#billingCountry', '[name="billingCountry"]', '[data-testid="billingCountry"]'],
-                        
-                        # Payment Information
-                        'cardNumber': ['#cardNumber', '[name="cardNumber"]', '[placeholder*="card"]', '[data-testid="cardNumber"]', '[id*="card"]'],
-                        'expiryDate': ['#expiryDate', '[name="expiryDate"]', '[placeholder*="expiry"]', '[data-testid="expiryDate"]', '[placeholder*="mm/yy"]'],
-                        'cvv': ['#cvv', '[name="cvv"]', '[placeholder*="cvv"]', '[data-testid="cvv"]', '[placeholder*="security"]'],
-                        'nameOnCard': ['#nameOnCard', '[name="nameOnCard"]', '[placeholder*="name on card"]', '[data-testid="nameOnCard"]'],
-                        
-                        # Additional Options
-                        'specialInstructions': ['#specialInstructions', '[name="specialInstructions"]', '[placeholder*="instructions"]', '[data-testid="specialInstructions"]', 'textarea[name*="instructions"]']
+                        'email': ['#email', '[name="email"]', '[type="email"]'],
+                        'phone': ['#phone', '[name="phone"]', '[type="tel"]'],
+                        'firstName': ['#firstName', '[name="firstName"]'],
+                        'lastName': ['#lastName', '[name="lastName"]'],
+                        'company': ['#company', '[name="company"]'],
+                        'address1': ['#address1', '[name="address1"]'],
+                        'address2': ['#address2', '[name="address2"]'],
+                        'city': ['#city', '[name="city"]'],
+                        'state': ['#state', '[name="state"]'],
+                        'zipCode': ['#zipCode', '#zip', '[name="zip"]'],
+                        'country': ['#country', '[name="country"]'],
+                        'cardNumber': ['#cardNumber', '[name="cardNumber"]'],
+                        'expiryDate': ['#expiryDate', '[name="expiryDate"]'],
+                        'cvv': ['#cvv', '[name="cvv"]'],
+                        'nameOnCard': ['#nameOnCard', '[name="nameOnCard"]'],
+                        'specialInstructions': ['#specialInstructions', '[name="specialInstructions"]']
                     }
                     
-                    # Fill form fields with enhanced logic and better error handling
+                    # Fill form fields
                     fields_filled = 0
                     for field, value in checkout_info.items():
-                        field_filled = False
-                        print(f"🔍 Attempting to fill field: {field}")
-                        
                         for selector in form_selectors.get(field, []):
                             try:
                                 element = page.query_selector(selector)
-                                if element:
-                                    # Check if element is visible and enabled
-                                    is_visible = element.is_visible()
-                                    is_enabled = element.is_enabled()
-                                    
-                                    print(f"   🎯 Found element with selector: {selector}")
-                                    print(f"      Visible: {is_visible}, Enabled: {is_enabled}")
-                                    
-                                    if is_visible and is_enabled:
-                                        # Get element tag and type safely
-                                        try:
-                                            tag_name = element.evaluate('el => el.tagName')
-                                        except:
-                                            tag_name = element.get_attribute('tagName')
-                                        
-                                        element_type = element.get_attribute('type')
-                                        
-                                        print(f"      Tag: {tag_name}, Type: {element_type}")
-                                        
-                                        # Check if it's a select dropdown
-                                        if tag_name and tag_name.lower() == 'select':
-                                            element.select_option(value)
-                                            print(f"✅ Selected {field}: {value}")
-                                            field_filled = True
-                                            fields_filled += 1
-                                            break
-                                        # Check if it's a checkbox
-                                        elif element_type and element_type.lower() == 'checkbox':
-                                            # For now, we'll leave checkboxes unchecked (billingDifferent=false, newsletter=false)
-                                            print(f"📋 Skipped checkbox {field} (keeping default state)")
-                                            field_filled = True
-                                            break
-                                        # Check if it's a radio button
-                                        elif element_type and element_type.lower() == 'radio':
-                                            element.check()
-                                            print(f"✅ Selected radio {field}: {value}")
-                                            field_filled = True
-                                            fields_filled += 1
-                                            break
-                                        # Regular input field (text, email, tel, etc.)
-                                        else:
-                                            # Fill the field (this automatically clears and replaces content)
-                                            element.fill(value)
-                                            
-                                            # Verify the value was set
-                                            try:
-                                                filled_value = element.input_value()
-                                                if filled_value == value:
-                                                    print(f"✅ Filled {field}: {value}")
-                                                    field_filled = True
-                                                    fields_filled += 1
-                                                    break
-                                                else:
-                                                    print(f"⚠️ Value mismatch for {field}. Expected: {value}, Got: {filled_value}")
-                                            except:
-                                                # Some elements don't support input_value(), just assume it worked
-                                                print(f"✅ Filled {field}: {value} (verification skipped)")
-                                                field_filled = True
-                                                fields_filled += 1
-                                                break
-                                    else:
-                                        print(f"      Element not visible or enabled, skipping")
-                                else:
-                                    print(f"   ❌ Element not found for selector: {selector}")
-                                    
-                            except Exception as e:
-                                print(f"   ⚠️ Error with selector {selector}: {str(e)}")
-                                continue
-                        
-                        if not field_filled:
-                            print(f"⚠️ Could not fill {field}: {value}")
-                            # Try a more generic approach for this field
-                            try:
-                                # Look for any input with name, id, or placeholder containing the field name
-                                generic_selectors = [
-                                    f'[name*="{field.lower()}"]',
-                                    f'[id*="{field.lower()}"]',
-                                    f'[placeholder*="{field.lower()}"]',
-                                    f'input[name*="{field.lower()}"]',
-                                    f'input[id*="{field.lower()}"]'
-                                ]
-                                
-                                for generic_selector in generic_selectors:
-                                    try:
-                                        generic_element = page.query_selector(generic_selector)
-                                        if generic_element and generic_element.is_visible() and generic_element.is_enabled():
-                                            generic_element.fill(value)
-                                            print(f"✅ Filled {field} using generic selector: {generic_selector}")
-                                            field_filled = True
-                                            fields_filled += 1
-                                            break
-                                    except:
-                                        continue
-                                        
-                            except Exception as e:
-                                print(f"   ⚠️ Generic selector approach failed: {str(e)}")
-                    
-                    print(f"📊 Successfully filled {fields_filled} out of {len(checkout_info)} fields")
-                    
-                    # Handle special cases: Payment method selection
-                    try:
-                        # Try to select credit card as payment method
-                        payment_selectors = [
-                            'input[value="credit_card"]',
-                            'input[name="paymentMethod"][value="credit_card"]',
-                            '[data-testid="credit-card-option"]',
-                            'input[type="radio"][value*="credit"]'
-                        ]
-                        
-                        for selector in payment_selectors:
-                            try:
-                                payment_element = page.query_selector(selector)
-                                if payment_element:
-                                    payment_element.check()
-                                    print("✅ Selected credit card payment method")
+                                if element and element.is_visible() and element.is_enabled():
+                                    element.fill(value)
+                                    print(f"✅ Filled {field}: {value}")
+                                    fields_filled += 1
                                     break
                             except:
                                 continue
-                    except:
-                        print("⚠️ Could not select payment method")
+                    
+                    print(f"📊 Successfully filled {fields_filled} out of {len(checkout_info)} fields")
                     
                     # Wait for form validation
                     time.sleep(3)
                     
-
-                    
-                    # Look for and click submit/complete order button with comprehensive selectors
+                    # Find and click submit button
                     print(f"🔄 Looking for submit/complete order button...")
                     
                     submit_selectors = [
-                        # Primary submit buttons
                         'button[type="submit"]',
-                        'input[type="submit"]',
-                        
-                        # Text-based button selectors
                         'button:has-text("Complete Order")',
                         'button:has-text("Place Order")',
-                        'button:has-text("Submit Order")',
-                        'button:has-text("Complete")',
-                        'button:has-text("Submit")',
-                        'button:has-text("Order")',
-                        'button:has-text("Purchase")',
-                        'button:has-text("Checkout")',
-                        'button:has-text("Buy Now")',
-                        'button:has-text("Confirm")',
-                        
-                        # Case-insensitive variations
-                        'button:has-text("COMPLETE ORDER")',
-                        'button:has-text("PLACE ORDER")',
-                        'button:has-text("SUBMIT ORDER")',
-                        
-                        # Data attributes and IDs
                         '[data-testid="submit-order"]',
-                        '[data-testid="complete-order"]',
-                        '[data-testid="place-order"]',
-                        '[data-testid="checkout-submit"]',
-                        
-                        # Class-based selectors
-                        '.submit-btn',
-                        '.complete-order',
-                        '.place-order',
-                        '.checkout-submit',
-                        '.order-submit',
-                        
-                        # ID selectors
-                        '#submit',
-                        '#complete-order',
-                        '#place-order',
-                        '#checkout-submit',
-                        '#order-submit'
+                        '#submit'
                     ]
                     
                     submit_clicked = False
@@ -850,480 +546,92 @@ def complete_checkout_with_playwright(product_url: str, cart_url: str, checkout_
                                 print(f"✅ Successfully clicked submit button")
                                 submit_clicked = True
                                 break
-                        except Exception as e:
-                            continue
-                    
-                    if not submit_clicked:
-                        print("❌ Could not find submit button, trying fallback approach...")
-                        # Fallback: look for any button that might be a submit button
-                        try:
-                            all_buttons = page.query_selector_all('button, input[type="button"], input[type="submit"]')
-                            for button in all_buttons:
-                                try:
-                                    text = button.inner_text().lower() if button.inner_text() else ''
-                                    value = button.get_attribute('value') or ''
-                                    if any(phrase in text or phrase in value.lower() for phrase in ['submit', 'complete', 'order', 'place', 'confirm', 'buy']):
-                                        print(f"🔄 Trying fallback button: {text or value}")
-                                        button.click()
-                                        submit_clicked = True
-                                        break
-                                except:
-                                    continue
                         except:
-                            pass
+                            continue
                     
                     if submit_clicked:
                         print("✅ Order submission initiated")
                         
-                        # STEP 6: Wait for redirect to order success page
-                        print(f"⏳ Waiting for redirect to order success page...")
+                        # Wait for success page
+                        time.sleep(5)
                         
-                        success_page_reached = False
-                        current_url = page.url
-                        print(f"📍 Starting URL: {current_url}")
-                        
-                        # Strategy 1: Wait for navigation event (works for full page redirects)
-                        try:
-                            print("🔄 Attempting to wait for navigation event...")
-                            page.wait_for_navigation(timeout=15000)  # 15 seconds
-                            new_url = page.url
-                            print(f"✅ Navigation detected! New URL: {new_url}")
-                            
-                            # Check if the new URL is a success page
-                            success_patterns = ['/order-success', '/success', '/confirmation', '/thank-you', '/order-complete', '/order-confirmed']
-                            if any(pattern in new_url.lower() for pattern in success_patterns):
-                                success_page_reached = True
-                                print(f"✅ Successfully redirected to order success page via navigation: {new_url}")
-                            
-                        except Exception as e:
-                            print(f"⚠️ No navigation event detected: {e}")
-                        
-                        # Strategy 2: Wait for URL pattern match (works for client-side routing)
-                        if not success_page_reached:
-                            print("🔄 Attempting to wait for URL pattern match...")
-                            success_patterns = ['**/order-success*', '**/success*', '**/confirmation*', '**/thank-you*']
-                            
-                            for pattern in success_patterns:
-                                try:
-                                    print(f"   Trying pattern: {pattern}")
-                                    page.wait_for_url(pattern, timeout=10000)  # 10 seconds per pattern
-                                    new_url = page.url
-                                    print(f"✅ URL pattern matched! New URL: {new_url}")
-                                    success_page_reached = True
-                                    break
-                                except Exception as e:
-                                    print(f"   Pattern {pattern} not matched: {e}")
-                                    continue
-                        
-                        # Strategy 3: Manual polling with DOM change detection
-                        if not success_page_reached:
-                            print("🔄 Falling back to manual URL polling with DOM monitoring...")
-                            max_wait_time = 20
-                            wait_interval = 1
-                            waited_time = 0
-                            last_url = page.url
-                            
-                            while waited_time < max_wait_time and not success_page_reached:
-                                try:
-                                    current_url = page.url
-                                    
-                                    # Check if URL changed
-                                    if current_url != last_url:
-                                        print(f"🔍 URL changed from {last_url} to {current_url}")
-                                        last_url = current_url
-                                    
-                                    # Check for success page patterns
-                                    success_patterns = ['/order-success', '/success', '/confirmation', '/thank-you', '/order-complete', '/order-confirmed']
-                                    if any(pattern in current_url.lower() for pattern in success_patterns):
-                                        success_page_reached = True
-                                        print(f"✅ Success page detected via polling: {current_url}")
-                                        break
-                                    
-                                    # Also check DOM content for success indicators
-                                    try:
-                                        # Look for success-related text in the page
-                                        success_text_indicators = [
-                                            'text="Order placed successfully"',
-                                            'text="Thank you for your order"',
-                                            'text="Order confirmation"',
-                                            'text="Your order has been placed"',
-                                            ':has-text("Order #")',
-                                            ':has-text("Order Number")'
-                                        ]
-                                        
-                                        for indicator in success_text_indicators:
-                                            try:
-                                                element = page.query_selector(indicator)
-                                                if element and element.is_visible():
-                                                    print(f"✅ Success page detected via DOM content: found '{indicator}'")
-                                                    success_page_reached = True
-                                                    break
-                                            except:
-                                                continue
-                                        
-                                        if success_page_reached:
-                                            break
-                                            
-                                    except:
-                                        pass
-                                    
-                                    print(f"🔍 Current URL (polling {waited_time}s): {current_url}")
-                                    time.sleep(wait_interval)
-                                    waited_time += wait_interval
-                                    
-                                except Exception as e:
-                                    print(f"⚠️ Error during polling: {e}")
-                                    time.sleep(wait_interval)
-                                    waited_time += wait_interval
-                        
-                        if not success_page_reached:
-                            print(f"⚠️ Could not detect order success page after all strategies")
-                            print(f"📍 Final URL: {page.url}")
-                            
-                            # Still try to extract order info from current page in case it's there
-                            print("🔄 Attempting order extraction from current page anyway...")
-                        else:
-                            print(f"✅ Order success page reached: {page.url}")
-                        
-                        # STEP 7: Extract order number from success page
-                        print(f"🔍 Extracting order number from success page...")
-                        
-                        # Wait for success page to fully load
-                        time.sleep(3)
-                        
+                        # Extract order ID
                         order_id = None
                         order_info = {}
                         
-                        # Comprehensive order number extraction strategies
-                        order_extraction_strategies = [
-                            # Strategy 1: Look for "Order #" or "Order Number" text patterns
-                            {
-                                'name': 'Order # Text Pattern',
-                                'selectors': [
-                                    'span:has-text("Order #")',
-                                    'div:has-text("Order #")',
-                                    'p:has-text("Order #")',
-                                    'span:has-text("Order Number")',
-                                    'div:has-text("Order Number")',
-                                    'p:has-text("Order Number")',
-                                    'h1:has-text("Order")',
-                                    'h2:has-text("Order")',
-                                    'h3:has-text("Order")'
-                                ],
-                                'regex': r'Order\s*#\s*([A-Z0-9][A-Za-z0-9-]{5,})'
-                            },
+                        try:
+                            # Look for order ID on success page
+                            order_selectors = [
+                                'span:has-text("Order #")',
+                                '[data-testid*="order"]',
+                                '.order-number'
+                            ]
                             
-                            # Strategy 2: Look for data attributes and IDs
-                            {
-                                'name': 'Data Attributes',
-                                'selectors': [
-                                    '[data-testid*="order"]',
-                                    '[data-testid*="orderNumber"]',
-                                    '[data-testid*="order-id"]',
-                                    '[id*="order-number"]',
-                                    '[id*="orderNumber"]',
-                                    '[id*="order-id"]',
-                                    '[class*="order-number"]',
-                                    '[class*="orderNumber"]',
-                                    '[class*="order-id"]'
-                                ],
-                                'regex': r'([A-Za-z0-9-]+)'
-                            },
-                            
-                            # Strategy 3: Look for confirmation/success specific elements
-                            {
-                                'name': 'Confirmation Elements',
-                                'selectors': [
-                                    '.confirmation .order-number',
-                                    '.success .order-number',
-                                    '.order-confirmation',
-                                    '.order-summary',
-                                    '.thank-you .order-number'
-                                ],
-                                'regex': r'([A-Za-z0-9-]+)'
-                            }
-                        ]
-                        
-                        # Try each extraction strategy
-                        for strategy in order_extraction_strategies:
-                            if order_id:
-                                break
-                                
-                            print(f"🎯 Trying strategy: {strategy['name']}")
-                            
-                            for selector in strategy['selectors']:
+                            for selector in order_selectors:
                                 try:
                                     element = page.query_selector(selector)
-                                    if element and element.is_visible():
+                                    if element:
                                         text = element.inner_text().strip()
-                                        print(f"🔍 Found element with text: {text}")
-                                        
-                                        # Extract order ID using strategy's regex
-                                        order_match = re.search(strategy['regex'], text, re.IGNORECASE)
+                                        order_match = re.search(r'([A-Z0-9-]+)', text)
                                         if order_match:
                                             order_id = order_match.group(1)
-                                            print(f"✅ Extracted order ID: {order_id} (using {strategy['name']})")
-                                            
-                                            # Store additional order info
                                             order_info = {
                                                 'order_id': order_id,
-                                                'extraction_method': strategy['name'],
-                                                'selector_used': selector,
-                                                'full_text': text,
                                                 'success_page_url': page.url,
                                                 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
                                             }
+                                            print(f"✅ Extracted order ID: {order_id}")
                                             break
-                                except Exception as e:
+                                except:
                                     continue
-                        
-                        # Fallback: Extract from URL if still not found
-                        if not order_id:
-                            print("🔄 Trying URL extraction as fallback...")
-                            try:
-                                current_url = page.url
-                                url_patterns = [
-                                    r'order-success/([A-Za-z0-9-]+)',
-                                    r'order/([A-Za-z0-9-]+)',
-                                    r'success/([A-Za-z0-9-]+)',
-                                    r'confirmation/([A-Za-z0-9-]+)',
-                                    r'[?&]order[=:]([A-Za-z0-9-]+)',
-                                    r'[?&]id[=:]([A-Za-z0-9-]+)',
-                                    r'[?&]order_id[=:]([A-Za-z0-9-]+)'
-                                ]
-                                
-                                for pattern in url_patterns:
-                                    url_match = re.search(pattern, current_url, re.IGNORECASE)
-                                    if url_match:
-                                        order_id = url_match.group(1)
-                                        order_info = {
-                                            'order_id': order_id,
-                                            'extraction_method': 'URL Pattern',
-                                            'pattern_used': pattern,
-                                            'success_page_url': current_url,
-                                            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-                                        }
-                                        print(f"✅ Extracted order ID from URL: {order_id}")
-                                        break
-                            except Exception as e:
-                                print(f"⚠️ URL extraction error: {e}")
-                        
-                        # Final fallback: Get any text that looks like an order ID
-                        if not order_id:
-                            print("🔄 Final fallback: scanning entire page content...")
-                            try:
-                                page_content = page.content()
-                                # Look for patterns like "ORD-20251013090947-B12E70F6", "12345", etc.
-                                fallback_patterns = [
-                                    r'Order\s*#\s*([A-Z0-9][A-Za-z0-9-]{5,})',
-                                    r'\b(ORD-[A-Z0-9-]+)\b',
-                                    r'\b([A-Z]{3}-[0-9]{14}-[A-Z0-9]{8})\b',
-                                    r'order[#\s:]*([A-Z0-9-]{6,})',
-                                    r'confirmation[#\s:]*([A-Z0-9-]{6,})',
-                                    r'\b([A-Z]{2,}[0-9]{4,})\b',
-                                    r'\b([0-9]{6,})\b'
-                                ]
-                                
-                                for pattern in fallback_patterns:
-                                    matches = re.findall(pattern, page_content, re.IGNORECASE)
-                                    if matches:
-                                        order_id = matches[0]
-                                        order_info = {
-                                            'order_id': order_id,
-                                            'extraction_method': 'Page Content Scan',
-                                            'pattern_used': pattern,
-                                            'success_page_url': page.url,
-                                            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-                                        }
-                                        print(f"✅ Extracted order ID from page content: {order_id}")
-                                        break
-                            except Exception as e:
-                                print(f"⚠️ Page content scan error: {e}")
-                        
-                    else:
-                        print("❌ Could not submit order - no submit button found")
-                        order_info = {
-                            'error': 'Could not submit order - no submit button found',
-                            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-                        }
-                    
-                    # Log comprehensive results
-                    print("\n" + "="*60)
-                    print("🛒 CHECKOUT COMPLETION RESULTS")
-                    print("="*60)
-                    
-                    if order_id:
-                        print(f"✅ ORDER SUCCESSFULLY PLACED!")
-                        print(f"📋 Order ID: {order_id}")
-                        print(f"🔍 Extraction Method: {order_info.get('extraction_method', 'Unknown')}")
-                        print(f"🌐 Success Page URL: {order_info.get('success_page_url', page.url)}")
-                        print(f"🕒 Completed At: {order_info.get('timestamp', 'Unknown')}")
-                        
-                        if order_info.get('full_text'):
-                            print(f"📝 Full Text Found: {order_info['full_text']}")
-                        
-                        # Store order info globally for UI display
-                        global _order_completion_results
-                        _order_completion_results = order_info
-                        
-                    else:
-                        print("❌ Order ID: Not found")
-                        print("🔍 Attempted all extraction strategies without success")
-                        
-                        # Try to get page content for debugging
-                        try:
-                            print("📄 Success page content (first 1000 chars):")
-                            page_content = page.content()
-                            print(page_content[:1000] + "..." if len(page_content) > 1000 else page_content)
                         except Exception as e:
-                            print(f"⚠️ Could not retrieve page content: {e}")
+                            print(f"⚠️ Order ID extraction error: {e}")
                         
-                        # Store error info
-                        _order_completion_results = {
-                            'error': 'Order ID not found after successful form submission',
-                            'final_url': page.url,
-                            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-                        }
+                        # Store results globally
+                        global _order_completion_results
+                        if order_id:
+                            _order_completion_results = order_info
+                        else:
+                            _order_completion_results = {
+                                'error': 'Order ID not found',
+                                'final_url': page.url,
+                                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                            }
+                    else:
+                        print("❌ Could not submit order")
                     
-                    print("="*60)
-                    
-                    # Wait before closing to allow user to see results
-                    print("⏳ Closing browser in 3 seconds...")
+                    # Wait before closing
                     time.sleep(3)
-                    
-                    return order_id is not None, order_info
                     
                 except Exception as e:
                     print(f"❌ Checkout error: {e}")
                 
-                # Close the browser
+                # Close browser
                 try:
-                    print("🔒 Closing browser...")
                     browser.close()
-                except Exception as e:
-                    print(f"Error closing browser: {e}")
+                except:
+                    pass
         
-        # Start checkout in a separate thread
+        # Start checkout in separate thread
         checkout_thread = threading.Thread(target=run_full_checkout, daemon=True)
         checkout_thread.start()
+        checkout_thread.join(timeout=120)
         
-        # Wait for the thread to complete (with timeout)
-        checkout_thread.join(timeout=120)  # 2 minute timeout
-        
-        # Check if thread is still alive (timed out)
-        if checkout_thread.is_alive():
-            print("⚠️ Checkout process timed out after 2 minutes")
-            return False, {'error': 'Checkout process timed out after 2 minutes', 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')}
-        
-        # Return results
         if _order_completion_results:
             if 'error' in _order_completion_results:
                 return False, _order_completion_results
             else:
                 return True, _order_completion_results
         else:
-            return False, {'error': 'Checkout process completed but no results found', 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')}
+            return False, {'error': 'Checkout process failed', 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')}
             
-    except ImportError:
-        return False, {'error': 'Playwright not installed', 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')}
     except Exception as e:
         return False, {'error': f'Checkout error: {str(e)}', 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')}
 
-def create_signature(private_key_pem: str, json_data: str) -> str:
-    """Create a signature using the private key with JSON data and base64 encoding"""
+def create_ed25519_signature(authority: str, path: str, keyid: str, nonce: str, created: int, expires: int, tag: str) -> tuple[str, str]:
+    """Create HTTP Message Signature using Ed25519 with Base58 encoding following RFC 9421"""
     try:
-        # Parse JSON to validate it
-        try:
-            parsed_json = json.loads(json_data)
-        except json.JSONDecodeError as e:
-            st.error(f"Invalid JSON format: {str(e)}")
-            return ""
-        
-        # Convert JSON to string (compact format)
-        json_string = json.dumps(parsed_json, separators=(',', ':'), sort_keys=True)
-        
-        # Base64 encode the JSON string
-        base64_data = base64.b64encode(json_string.encode('utf-8')).decode('utf-8')
-        print(f"Base64 Encoded Data: {base64_data}")    
-        
-        # Load private key
-        private_key = serialization.load_pem_private_key(
-            private_key_pem.encode('utf-8'),
-            password=None,
-            backend=default_backend()
-        )
-        
-        # Sign the base64 encoded data
-        signature = private_key.sign(
-            base64_data.encode('utf-8'),
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
-        )
-        
-        return base64.b64encode(signature).decode('utf-8')
-    except Exception as e:
-        st.error(f"Error creating signature: {str(e)}")
-        return ""
-
-def create_http_message_signature(private_key_pem: str, authority: str, path: str, keyid: str, nonce: str, created: int, expires: int, tag: str) -> tuple[str, str]:
-    """Create HTTP Message Signature following RFC 9421 syntax"""
-    try:
-        # Create signature parameters string
-        signature_params = f'("@authority" "@path"); created={created}; expires={expires}; keyId="{keyid}"; alg="rsa-pss-sha256"; nonce="{nonce}"; tag="{tag}"'
-        
-        # Create the signature base string following RFC 9421 format
-        signature_base_lines = [
-            f'"@authority": {authority}',
-            f'"@path": {path}',
-            f'"@signature-params": {signature_params}'
-        ]
-        signature_base = '\n'.join(signature_base_lines)
-        
-        print(f"Signature Base String:\n{signature_base}")
-        print(f"Authority: {authority}")
-        print(f"Path: {path}")
-        print(f"Signature Params: {signature_params}")
-        
-        # Load private key
-        private_key = serialization.load_pem_private_key(
-            private_key_pem.encode('utf-8'),
-            password=None,
-            backend=default_backend()
-        )
-        
-        # Sign the signature base string using RSA-PSS (matching the algorithm declared)
-        signature = private_key.sign(
-            signature_base.encode('utf-8'),
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
-        )
-        
-        signature_b64 = base64.b64encode(signature).decode('utf-8')
-        
-        # Format the signature-input header (RFC 9421 format)
-        signature_input_header = f'sig2=("@authority" "@path"); created={created}; expires={expires}; keyId="{keyid}"; alg="rsa-pss-sha256"; nonce="{nonce}"; tag="{tag}"'
-        
-        # Format the signature header (RFC 9421 format)
-        signature_header = f'sig2=:{signature_b64}:'
-        
-        return signature_input_header, signature_header
-        
-    except Exception as e:
-        st.error(f"Error creating HTTP message signature: {str(e)}")
-        return "", ""
-
-def create_ed25519_signature(private_key_pem: str, authority: str, path: str, keyid: str, nonce: str, created: int, expires: int, tag: str) -> tuple[str, str]:
-    """Create HTTP Message Signature using Ed25519 following RFC 9421"""
-    try:
-        from cryptography.hazmat.primitives.asymmetric import ed25519
-        
-        print(f"🔐 Creating Ed25519 signature...")
+        print(f"🔐 Creating Ed25519 signature with Base58 encoding...")
         print(f"🌐 Authority: {authority}")
         print(f"📍 Path: {path}")
         
@@ -1340,33 +648,41 @@ def create_ed25519_signature(private_key_pem: str, authority: str, path: str, ke
         
         print(f"🔐 Ed25519 Signature Base String:\n{signature_base}")
         
-        # Load Ed25519 keys from environment variables
+        # Load Ed25519 keys from environment variables (Base58 format)
         try:
-            ed25519_private_b64, ed25519_public_b64 = get_ed25519_keys_from_env()
-            print(f"🔑 Using Ed25519 keys from environment variables")
+            ed25519_private_base58, ed25519_public_base58 = get_ed25519_keys_from_env()
+            print(f"🔑 Using Ed25519 keys from environment variables (Base58)")
         except ValueError as e:
             print(f"❌ Ed25519 keys not found in environment: {e}")
-            st.error(f"Ed25519 keys not configured. Please add ED25519_PRIVATE_KEY and ED25519_PUBLIC_KEY to your .env file.")
+            st.error(f"Ed25519 keys not configured. Please add ED25519_PRIVATE_KEY and ED25519_PUBLIC_KEY to your .env file (Base58 format).")
             return "", ""
         
-        # Load private key from base64
-        private_bytes = base64.b64decode(ed25519_private_b64)
+        # Decode Base58 private key to bytes
+        private_bytes = base58.b58decode(ed25519_private_base58)
+        print("Private bytes Length: ",len(private_bytes))
+        # Ed25519 private keys should be 32 bytes
+        if len(private_bytes) != 32:
+            raise ValueError(f"Ed25519 private key must be 32 bytes, got {len(private_bytes)} bytes")
+        
+        # Load private key
         private_key = ed25519.Ed25519PrivateKey.from_private_bytes(private_bytes)
         
-        print(f"🔑 Using Ed25519 Private Key: {ed25519_private_b64[:20]}...")
-        print(f"🔑 Using Ed25519 Public Key: {ed25519_public_b64[:20]}...")
+        print(f"🔑 Using Ed25519 Private Key (Base58): {ed25519_private_base58[:20]}...")
+        print(f"🔑 Using Ed25519 Public Key (Base58): {ed25519_public_base58[:20]}...")
         
-        # Sign with Ed25519 (no padding needed)
+        # Sign with Ed25519
         signature = private_key.sign(signature_base.encode('utf-8'))
-        signature_b64 = base64.b64encode(signature).decode('utf-8')
         
+        # Encode signature to Base58
+        signature_base58 = base58.b58encode(signature)
+        print("Base Signature: ",signature_base58)
         # Format headers
         signature_input_header = f'sig2=("@authority" "@path"); created={created}; expires={expires}; keyId="{keyid}"; alg="ed25519"; nonce="{nonce}"; tag="{tag}"'
-        signature_header = f'sig2=:{signature_b64}:'
+        signature_header = f'sig2=:{signature_base58}:'
         
-        print(f"✅ Created Ed25519 signature")
+        print(f"✅ Created Ed25519 signature (Base58)")
         print(f"📤 Signature-Input: {signature_input_header}")
-        print(f"🔒 Signature: {signature_header}")
+        print(f"🔒 Signature (Base58): {signature_header}")
         
         return signature_input_header, signature_header
         
@@ -1396,13 +712,13 @@ def parse_url_components(url: str) -> tuple[str, str]:
 
 def main():
     st.set_page_config(
-        page_title="TAP Agent",
+        page_title="TAP Agent - Ed25519 Base58",
         page_icon="🔐",
         layout="wide"
     )
     
-    st.title("🔐 TAP Agent")
-    st.markdown("Generate signatures and launch sample merchant product details")
+    st.title("🔐 TAP Agent - Ed25519 Base58")
+    st.markdown("Generate Ed25519 Base58 signatures and launch sample merchant interactions")
     
     # Configuration Section
     st.header("⚙️ Configuration")
@@ -1418,15 +734,11 @@ def main():
         
         reference_url = st.text_input(
             "Merchant URL",
-            value="http://localhost:3000/product/1",
+            value="http://localhost:3001/product/1",
             help="URL of the sample merchant product details page"
         )
     
-    # Initialize session state with static keys
-    if 'private_key' not in st.session_state:
-        st.session_state.private_key = ""
-    if 'public_key' not in st.session_state:
-        st.session_state.public_key = ""
+    # Initialize session state
     if 'ed25519_private_key' not in st.session_state:
         st.session_state.ed25519_private_key = ""
     if 'ed25519_public_key' not in st.session_state:
@@ -1434,12 +746,12 @@ def main():
     if 'product_details' not in st.session_state:
         st.session_state.product_details = None
     if 'input_data' not in st.session_state:
-        # Generate default values only once - use Ed25519 as default
+        # Generate default values only once
         import time
         nonce = str(uuid.uuid4())
         created = int(time.time())
         expires = created + 8 * 60  # 8 minutes from now
-        keyId = "primary-ed25519"  # Default to Ed25519 since it's the default algorithm
+        keyId = "primary-ed25519"
         tag = "agent-browser-auth"
         
         # Parse URL into authority and path components
@@ -1456,12 +768,6 @@ def main():
         }
         st.session_state.input_data = json.dumps(default_input, indent=2)
     
-    # Load static keys if not already loaded
-    if not st.session_state.private_key or not st.session_state.public_key:
-        private_key, public_key = get_static_keys()
-        st.session_state.private_key = private_key
-        st.session_state.public_key = public_key
-    
     # Load Ed25519 keys if not already loaded
     if not st.session_state.ed25519_private_key or not st.session_state.ed25519_public_key:
         try:
@@ -1469,24 +775,7 @@ def main():
             st.session_state.ed25519_private_key = ed25519_private_key
             st.session_state.ed25519_public_key = ed25519_public_key
         except ValueError:
-            # Ed25519 keys not configured - will show error when trying to use them
-            pass
-    
-    # Algorithm Selection
-    st.header("🔐 Signature Algorithm")
-    signature_algorithm = st.radio(
-        "Select signature algorithm:",
-        options=["ed25519", "rsa-pss-sha256"],
-        index=0,  # Default to ed25519
-        help="Choose the cryptographic algorithm for signature creation. Ed25519 is faster and more secure.",
-        horizontal=True
-    )
-    
-    # Show algorithm info
-    if signature_algorithm == "ed25519":
-        st.info("🚀 **Ed25519** - Fast, secure, and modern signature algorithm. Uses keys from environment variables.")
-    else:
-        st.info("🔒 **RSA-PSS-SHA256** - Traditional RSA signature with PSS padding. Uses keys from environment variables.")
+            st.warning("⚠️ Ed25519 keys not configured in environment variables")
     
     with col2:
         st.subheader("Input Data")
@@ -1499,13 +788,7 @@ def main():
             nonce = str(uuid.uuid4())
             created = int(time.time())
             expires = created + 8 * 60  # 8 minutes from now
-            
-            # Use algorithm-appropriate keyId
-            if signature_algorithm == "ed25519":
-                keyId = "primary-ed25519"
-            else:
-                keyId = "primary"
-                
+            keyId = "primary-ed25519"
             tag = "agent-browser-auth"
             
             # Parse URL into authority and path components
@@ -1523,28 +806,25 @@ def main():
             st.session_state.input_data = json.dumps(default_input, indent=2)
             st.rerun()
     
-
+    # Display algorithm info
+    st.info("🚀 **Ed25519 with Base58 encoding** - Fast, secure, and modern signature algorithm using Base58 encoding for keys and signatures.")
     
     # Action Selection
     st.subheader("🎯 Action Selection")
     action_choice = st.radio(
         "Choose an action:",
         options=["Product Details", "Checkout"],
-        index=0,  # Default to Product Details
+        index=0,
         help="Select whether to fetch product details or complete a checkout process.",
         horizontal=True
     )
     
-    # Update input data function that considers action choice
+    # Update input data based on action choice
     def update_input_data_with_action():
-        """Update input data when signature algorithm, merchant URL, or action changes"""
+        """Update input data when merchant URL or action changes"""
         import time
         
-        # Determine keyId based on signature algorithm
-        if signature_algorithm == "ed25519":
-            keyId = "primary-ed25519"
-        else:
-            keyId = "primary"
+        keyId = "primary-ed25519"
         
         # Determine tag based on action choice
         if action_choice == "Product Details":
@@ -1562,7 +842,6 @@ def main():
             created = current_data.get('created', int(time.time()))
             expires = current_data.get('expires', created + 8 * 60)
         except (json.JSONDecodeError, KeyError):
-            # If parsing fails, use defaults
             nonce = str(uuid.uuid4())
             created = int(time.time())
             expires = created + 8 * 60
@@ -1583,7 +862,6 @@ def main():
     # Check if we need to update input data
     expected_input_data = update_input_data_with_action()
     if st.session_state.input_data != expected_input_data:
-        # Parse both to compare just the structure, ignoring whitespace differences
         try:
             current_parsed = json.loads(st.session_state.input_data)
             expected_parsed = json.loads(expected_input_data)
@@ -1596,46 +874,37 @@ def main():
                 st.session_state.input_data = expected_input_data
                 st.rerun()
         except json.JSONDecodeError:
-            # If parsing fails, update with the expected data
             st.session_state.input_data = expected_input_data
             st.rerun()
     
     # Launch Section
     st.header("🚀 Launch")
     
-    # Check if the required keys are available for the selected algorithm
-    if signature_algorithm == "ed25519":
-        if not st.session_state.ed25519_private_key:
-            st.warning("Please configure Ed25519 keys in your .env file first")
-            launch_disabled = True
-        else:
-            launch_disabled = False
-    else:  # rsa-pss-sha256
-        if not st.session_state.private_key:
-            st.warning("Please configure RSA keys in your .env file first")
-            launch_disabled = True
-        else:
-            launch_disabled = False
+    # Check if keys are available
+    if not st.session_state.ed25519_private_key:
+        st.warning("Please configure Ed25519 keys in your .env file first (Base58 format)")
+        launch_disabled = True
+    else:
+        launch_disabled = False
     
     # Dynamic button based on selection
     if action_choice == "Product Details":
         button_text = "📦 Fetch Product Details"
-        button_help = "Create RFC 9421 signature and fetch product details from the merchant"
+        button_help = "Create RFC 9421 Ed25519 Base58 signature and fetch product details"
         tag_value = "agent-browser-auth"
     else:  # Checkout
         button_text = "🛒 Complete Checkout"
-        button_help = "Create RFC 9421 signature and complete the checkout process"
+        button_help = "Create RFC 9421 Ed25519 Base58 signature and complete checkout"
         tag_value = "agent-payer-auth"
     
-    # Single launch button that adapts to the selected action
+    # Launch button
     if st.button(button_text, type="primary", disabled=launch_disabled, help=button_help):
-        if st.session_state.private_key:
+        if st.session_state.ed25519_private_key:
             import time
-            spinner_text = f"Creating RFC 9421 signature and {'fetching product details' if action_choice == 'Product Details' else 'completing checkout'}..."
+            spinner_text = f"Creating RFC 9421 Ed25519 Base58 signature and {'fetching product details' if action_choice == 'Product Details' else 'completing checkout'}..."
             
             with st.spinner(spinner_text):
-                    # Parse current input data to get signature parameters
-                # Parse current input data to get signature parameters
+                # Parse current input data
                 try:
                     parsed_json = json.loads(st.session_state.input_data)
                     nonce = parsed_json.get('nonce', str(uuid.uuid4()))
@@ -1648,130 +917,107 @@ def main():
                     created = int(time.time())
                     expires = created + 8 * 60
                     tag = tag_value
-                # Parse URL components for RFC 9421
+                
+                # Parse URL components
                 print(f"🔍 Attempting to parse URL: '{reference_url}'")
                 authority, path = parse_url_components(reference_url)
                 print(f"🔍 Parse result - Authority: '{authority}', Path: '{path}'")
                 
                 if authority and path:
-                        # Create RFC 9421 compliant signature using selected algorithm
-                        if signature_algorithm == "ed25519":
-                            signature_input_header, signature_header = create_ed25519_signature(
-                                private_key_pem="",  # Ed25519 function will load from environment
-                                authority=authority,
-                                path=path,
-                                keyid="primary-ed25519",
-                                nonce=nonce,
-                                created=created,
-                                expires=expires,
-                                tag=tag
-                            )
-                        else:  # rsa-pss-sha256
-                            signature_input_header, signature_header = create_http_message_signature(
-                                private_key_pem=st.session_state.private_key,
-                                authority=authority,
-                                path=path,
-                                keyid="primary",
-                                nonce=nonce,
-                                created=created,
-                                expires=expires,
-                                tag=tag
-                            )
+                    # Create RFC 9421 Ed25519 Base58 signature
+                    signature_input_header, signature_header = create_ed25519_signature(
+                        authority=authority,
+                        path=path,
+                        keyid="primary-ed25519",
+                        nonce=nonce,
+                        created=created,
+                        expires=expires,
+                        tag=tag
+                    )
 
-                        print(f"Signature Algorithm: {signature_algorithm}")
-                        print(f"Signature input String:\n{signature_input_header}")
-                        print(f"Signature String:\n{signature_header}")
+                    print(f"Signature Algorithm: ed25519 (Base58)")
+                    print(f"Signature input String:\n{signature_input_header}")
+                    print(f"Signature String:\n{signature_header}")
 
-                        if signature_input_header and signature_header:
-                            # Create headers for the request
-                            headers = {
-                                'Signature-Input': signature_input_header,
-                                'Signature': signature_header
-                            }
+                    if signature_input_header and signature_header:
+                        # Create headers
+                        headers = {
+                            'Signature-Input': signature_input_header,
+                            'Signature': signature_header
+                        }
+                        
+                        if action_choice == "Product Details":
+                            # Fetch product details
+                            if launch_with_playwright(reference_url, headers):
+                                st.success("✅ Product extraction started!")
+                                st.info("🔄 Please wait for extraction to complete")
+                                
+                                # Wait for results
+                                import time
+                                max_wait_time = 10
+                                check_interval = 1
+                                waited = 0
+                                
+                                while waited < max_wait_time:
+                                    time.sleep(check_interval)
+                                    waited += check_interval
+                                    
+                                    global _product_extraction_results
+                                    if _product_extraction_results:
+                                        st.session_state.product_details = _product_extraction_results
+                                        st.rerun()
+                                        break
+                                
+                                if not _product_extraction_results:
+                                    st.warning("⏳ Extraction taking longer than expected")
+                            else:
+                                st.error("❌ Failed to launch browser")
+                        else:  # Checkout
+                            # Complete checkout
+                            product_url = reference_url
                             
-                            if action_choice == "Product Details":
-                                # Fetch product details
-                                if launch_with_playwright(reference_url, headers):
-                                    st.success("✅ Product extraction started!")
-                                    st.info("🔄 Please wait a few seconds for extraction to complete, then check the Product Details section below.")
-                                    
-                                    # Start checking for results
-                                    import time
-                                    max_wait_time = 10  # seconds
-                                    check_interval = 1  # second
-                                    waited = 0
-                                    
-                                    while waited < max_wait_time:
-                                        time.sleep(check_interval)
-                                        waited += check_interval
-                                        
-                                        global _product_extraction_results
-                                        if _product_extraction_results:
-                                            st.session_state.product_details = _product_extraction_results
-                                            st.rerun()
-                                            break
-                                    
-                                    # If we get here, extraction didn't complete in time
-                                    if not _product_extraction_results:
-                                        st.warning("⏳ Product extraction is taking longer than expected. Check the console for updates.")
-                                else:
-                                    st.error("❌ Failed to launch browser for product extraction")
-                            else:  # Checkout
-                                # Complete checkout process
-                                product_url = reference_url  # Use the same reference URL for the product
+                            from urllib.parse import urlparse
+                            parsed = urlparse(reference_url)
+                            base_url = f"{parsed.scheme}://{parsed.netloc}"
+                            cart_url = f"{base_url}/cart"
+                            checkout_url = f"{base_url}/checkout"
+                            
+                            print(f"🛒 Attempting checkout with Ed25519 Base58 signature...")
+                            print(f"📄 Product URL: {product_url}")
+                            print(f"🛒 Cart URL: {cart_url}")
+                            print(f"💳 Checkout URL: {checkout_url}")
+                            
+                            success, order_info = complete_checkout_with_playwright(product_url, cart_url, checkout_url, headers)
+                            
+                            if success and order_info:
+                                st.success("🎉 Checkout completed successfully!")
                                 
-                                # Construct cart and checkout URLs based on merchant URL
-                                from urllib.parse import urlparse
-                                parsed = urlparse(reference_url)
-                                base_url = f"{parsed.scheme}://{parsed.netloc}"
-                                cart_url = f"{base_url}/cart"
-                                checkout_url = f"{base_url}/checkout"
-                                
-                                print(f"🛒 Attempting checkout with RFC 9421 signature...")
-                                print(f"📄 Product URL: {product_url}")
-                                print(f"🛒 Cart URL: {cart_url}")
-                                print(f"💳 Checkout URL: {checkout_url}")
-                                
-                                checkout_result = complete_checkout_with_playwright(product_url, cart_url, checkout_url, headers)
-                                success, order_info = checkout_result
-                                
-                                if success and order_info:
-                                    st.success("🎉 Checkout completed successfully!")
+                                if order_info.get('order_id'):
+                                    st.markdown("### 📋 Order Confirmation")
                                     
-                                    if order_info.get('order_id'):
-                                        st.markdown("### 📋 Order Confirmation")
-                                        
-                                        col1, col2 = st.columns(2)
-                                        with col1:
-                                            st.metric("Order ID", order_info['order_id'])
-                                            st.write(f"**Completed At:** {order_info.get('timestamp', 'Unknown')}")
-                                        
-                                        with col2:
-                                            st.write(f"**Extraction Method:** {order_info.get('extraction_method', 'Unknown')}")
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.metric("Order ID", order_info['order_id'])
+                                        st.write(f"**Completed At:** {order_info.get('timestamp', 'Unknown')}")
+                                    
+                                    with col2:
                                         st.write(f"**Success Page:** [View]({order_info.get('success_page_url', '#')})")
-                                    
-                                        # Show full order details in expander
-                                        with st.expander("🔍 Full Order Details"):
-                                            st.json(order_info)
-                                    
-                                    else:
-                                        st.warning("Order was placed but order ID could not be extracted.")
-                                        if order_info:
-                                            with st.expander("Debug Information"):
-                                                st.json(order_info)
+                                
+                                    with st.expander("🔍 Full Order Details"):
+                                        st.json(order_info)
                                 else:
-                                    st.error("❌ Checkout failed.")
-                                    if order_info and 'error' in order_info:
-                                        st.error(f"Error: {order_info['error']}")
-                                        with st.expander("Error Details"):
+                                    st.warning("Order placed but order ID not extracted")
+                                    if order_info:
+                                        with st.expander("Debug Information"):
                                             st.json(order_info)
-                                    elif not success:
-                                        st.error("Checkout process failed to complete successfully.")
-                        else:
-                            st.error("❌ Failed to create RFC 9421 signature")
+                            else:
+                                st.error("❌ Checkout failed")
+                                if order_info and 'error' in order_info:
+                                    st.error(f"Error: {order_info['error']}")
+                    else:
+                        st.error("❌ Failed to create signature")
                 else:
-                    st.error("❌ Failed to parse URL components for signature")
-    
+                    st.error("❌ Failed to parse URL components")
     
     # Product Details Section
     if st.session_state.product_details:
@@ -1800,7 +1046,7 @@ def main():
                 st.subheader("💰 Product Price")
                 st.write("❌ Not found")
         
-        # Additional extraction details
+        # Extraction details
         with st.expander("🔍 Extraction Details"):
             extraction_time = st.session_state.product_details.get('extraction_time', 'Unknown')
             st.write(f"**Extraction Time:** {extraction_time}")
