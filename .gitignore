@@ -2,6 +2,7 @@
 .idea
 *.iml
 ai42-agentregistry/
+tap-com-agent/
 # Specific build directories:
 **/target
 **/node_modules

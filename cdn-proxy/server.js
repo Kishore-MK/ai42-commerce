@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const axios = require('axios');
 const bs58 = require('bs58'); 
 const nacl = require('tweetnacl');
+const { verifyIntent } = require('./intent-registry-tools');
 
 // HTML escaping function to prevent XSS
 function escapeHtml(unsafe) {
@@ -285,8 +286,6 @@ async function verifyEd25519Signature(publicKeyBase58, signatureBase58, signatur
     }
     
     // Verify Ed25519 signature (no hashing needed, Ed25519 is pure)
-    // console.log(Buffer.from(signatureString, 'utf-8'),publicKeyBuffer, signatureBuffer);
-    
     const isValid = nacl.sign.detached.verify(Buffer.from(signatureString, 'utf-8'), signatureBuffer,publicKeyBuffer);
     
     console.log('🎯 Ed25519 Verification result:', isValid ? 'VALID ✅' : 'INVALID ❌');
@@ -305,6 +304,17 @@ const verifySignature = async (req, res, next) => {
   
   const signatureInput = req.headers['signature-input'];
   const signature = req.headers['signature'];
+  const intentSignature = req.headers['intentsignature']
+  const intentValidity = await verifyIntent(intentSignature)
+
+  if (!intentValidity) {
+    console.log('❌ CDN: Invalid intent - blocking');
+    return sendErrorResponse(res, 403, '🔑 Invalid intent ', 
+      'The Intent is invalid.', null);
+  }
+  else{
+    console.log("Intent ",intentSignature," is ",intentValidity ? "valid" : "invalid")
+  }
 
   console.log('🔍 CDN Proxy: headers are', {
     'signature-input': signatureInput ? `${sanitizeLogOutput(signatureInput.substring(0, 50))}...` : sanitizeLogOutput(signatureInput),

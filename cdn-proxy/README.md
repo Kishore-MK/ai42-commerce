@@ -100,3 +100,12 @@ This is a sample implementation showing how to:
 - Retrieve public keys from a registry
 - Verify signatures with multiple algorithms
 - Proxy requests based on verification results
+
+
+"@authority": localhost:3001
+"@path": /product/1
+"@signature-params": ("@authority" "@path"); created=1762850683; expires=1762851163; keyId="primary-ed25519"; alg="ed25519"; nonce="ece5d010-ade7-4aba-88f2-c7366b11c402"; tag="agent-browser-auth"
+
+"@authority": localhost:3001
+"@path": /product/1
+"@signature-params": ("@authority" "@path"); created=1762850683; expires=1762851163; keyId="primary-ed25519"; alg="ed25519"; nonce="ece5d010-ade7-4aba-88f2-c7366b11c402"; tag="agent-browser-auth"
