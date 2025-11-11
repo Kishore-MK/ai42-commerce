@@ -58,7 +58,7 @@ This repository contains a complete sample implementation demonstrating the Trus
 2. **Start All Services**:
    ```bash
    # Terminal 1: Agent Registry (port 8001)
-   cd agent-registry && python main.py
+   cd agent-registry  && npm install && npm run dev
    
    # Terminal 2: Merchant Backend (port 8000)
    cd merchant-backend && python -m uvicorn app.main:app --reload
@@ -68,21 +68,14 @@ This repository contains a complete sample implementation demonstrating the Trus
    
    # Terminal 4: Merchant Frontend (port 3001)
    cd merchant-frontend && npm install && npm run dev
-   
-   # Terminal 5: TAP Agent (port 8501)
-   cd tap-agent && streamlit run agent_app.py
+    
    ```
-
-3. **Try the Demo**:
-   - Open the TAP Agent at http://localhost:8501
-   - Configure merchant URL: http://localhost:3001
-   - Generate signatures and interact with the sample merchant
+ 
 
 ### 📚 **Component Documentation**
 
 Each component has detailed setup instructions:
-
-- **[TAP Agent](./tap-agent/README.md)** - Streamlit app demonstrating agent signature generation
+ 
 - **[Merchant Frontend](./merchant-frontend/README.md)** - React e-commerce sample with TAP integration  
 - **[Merchant Backend](./merchant-backend/README.md)** - FastAPI backend with signature verification
 - **[CDN Proxy](./cdn-proxy/README.md)** - Node.js proxy implementing RFC 9421 signature verification
